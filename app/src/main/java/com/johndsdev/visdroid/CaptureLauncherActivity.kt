@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -81,7 +82,12 @@ class CaptureLauncherActivity : Activity() {
 
     private fun requestPlaybackCapture() {
         val manager = getSystemService(MediaProjectionManager::class.java)
-        startActivityForResult(manager.createScreenCaptureIntent(), REQ_CAPTURE)
+        val captureIntent = if (Build.VERSION.SDK_INT >= 34) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        startActivityForResult(captureIntent, REQ_CAPTURE)
     }
 
     private fun stopAudio() {
