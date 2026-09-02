@@ -113,6 +113,10 @@ class CaptureLauncherActivity : Activity() {
         startActivity(Intent(this, MainActivity::class.java))
     }
 
+    private fun openFullscreenVisualizer() {
+        startActivity(Intent(this, FullscreenVisualizerActivity::class.java))
+    }
+
     private fun refreshStatus() {
         if (!::status.isInitialized) return
         status.text = if (Build.VERSION.SDK_INT < 29) {
@@ -166,8 +170,12 @@ class CaptureLauncherActivity : Activity() {
                 })
             })
 
-            addView(button("visualizer settings", false) { openSettings() }.apply {
+            addView(button("full-screen visualizer", false) { openFullscreenVisualizer() }.apply {
                 (layoutParams as LinearLayout.LayoutParams).topMargin = dp(14)
+            })
+
+            addView(button("visualizer settings", false) { openSettings() }.apply {
+                (layoutParams as LinearLayout.LayoutParams).topMargin = dp(8)
             })
 
             addView(TextView(this@CaptureLauncherActivity).apply {
