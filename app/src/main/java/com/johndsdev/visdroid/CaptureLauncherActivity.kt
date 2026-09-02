@@ -44,7 +44,7 @@ class CaptureLauncherActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_AUDIO && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            requestPlaybackCapture()
+            startCaptureOrLegacy()
         } else if (requestCode == REQ_AUDIO) {
             Toast.makeText(this, "audio permission is required", Toast.LENGTH_LONG).show()
         }
@@ -76,6 +76,15 @@ class CaptureLauncherActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
         } else {
+            startCaptureOrLegacy()
+        }
+    }
+
+    private fun startCaptureOrLegacy() {
+        if (Build.VERSION.SDK_INT < 29) {
+            Toast.makeText(this, "using legacy audio visualizer on this Android version", Toast.LENGTH_LONG).show()
+            openSettings()
+        } else {
             requestPlaybackCapture()
         }
     }
@@ -91,9 +100,11 @@ class CaptureLauncherActivity : Activity() {
     }
 
     private fun stopAudio() {
-        startService(Intent(this, PlaybackCaptureService::class.java).apply {
-            action = PlaybackCaptureService.ACTION_STOP
-        })
+        if (Build.VERSION.SDK_INT >= 29) {
+            startService(Intent(this, PlaybackCaptureService::class.java).apply {
+                action = PlaybackCaptureService.ACTION_STOP
+            })
+        }
         PlaybackSpectrumBus.clear("off")
         refreshStatus()
     }
@@ -104,7 +115,9 @@ class CaptureLauncherActivity : Activity() {
 
     private fun refreshStatus() {
         if (!::status.isInitialized) return
-        status.text = if (PlaybackSpectrumBus.active.get()) {
+        status.text = if (Build.VERSION.SDK_INT < 29) {
+            "system audio: legacy mode"
+        } else if (PlaybackSpectrumBus.active.get()) {
             "system audio: active"
         } else {
             "system audio: off"
