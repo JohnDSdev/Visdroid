@@ -18,6 +18,7 @@ import android.os.IBinder
 import android.os.Looper
 import kotlin.concurrent.thread
 import kotlin.math.max
+import kotlin.math.min
 
 class PlaybackCaptureService : Service() {
     companion object {
@@ -27,6 +28,10 @@ class PlaybackCaptureService : Service() {
         const val EXTRA_RESULT_DATA = "result_data"
         private const val CHANNEL_ID = "visdroid_playback_capture"
         private const val NOTIFICATION_ID = 6001
+        private const val SAMPLE_RATE = 48_000
+        private const val FFT_SIZE = 2048
+        // 48,000 / 800 = exactly 60 spectrum updates per second.
+        private const val HOP_SIZE = 800
     }
 
     private var projection: MediaProjection? = null
@@ -89,10 +94,9 @@ class PlaybackCaptureService : Service() {
     }
 
     private fun startRecorder(mediaProjection: MediaProjection) {
-        val sampleRate = 48_000
         val format = AudioFormat.Builder()
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-            .setSampleRate(sampleRate)
+            .setSampleRate(SAMPLE_RATE)
             .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
             .build()
 
@@ -103,11 +107,11 @@ class PlaybackCaptureService : Service() {
             .build()
 
         val minBuffer = AudioRecord.getMinBufferSize(
-            sampleRate,
+            SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
-        val bufferBytes = max(minBuffer * 2, 2048 * 2 * 2)
+        val bufferBytes = max(minBuffer * 2, FFT_SIZE * 2 * 2)
         val record = AudioRecord.Builder()
             .setAudioFormat(format)
             .setBufferSizeInBytes(bufferBytes)
@@ -121,14 +125,38 @@ class PlaybackCaptureService : Service() {
         PlaybackSpectrumBus.status.set("capturing")
 
         worker = thread(name = "VisDroidPlaybackCapture", isDaemon = true) {
-            val pcm = ShortArray(2048)
-            val analyzer = PcmSpectrumAnalyzer(2048)
+            // Keep a full FFT window for frequency resolution, but advance it by only 800 samples.
+            // That gives us overlapping windows at 60 Hz instead of one new 2048-sample frame at ~23 Hz.
+            val hop = ShortArray(HOP_SIZE)
+            val fftWindow = ShortArray(FFT_SIZE)
+            val analyzer = PcmSpectrumAnalyzer(FFT_SIZE)
+            var filled = 0
+
             try {
                 while (running) {
-                    val read = record.read(pcm, 0, pcm.size, AudioRecord.READ_BLOCKING)
-                    if (read > 0) {
+                    var offset = 0
+                    while (running && offset < HOP_SIZE) {
+                        val read = record.read(hop, offset, HOP_SIZE - offset, AudioRecord.READ_BLOCKING)
+                        if (read > 0) {
+                            offset += read
+                        } else if (read < 0) {
+                            throw IllegalStateException("AudioRecord.read returned $read")
+                        }
+                    }
+                    if (!running || offset <= 0) break
+
+                    val shift = min(offset, FFT_SIZE)
+                    System.arraycopy(fftWindow, shift, fftWindow, 0, FFT_SIZE - shift)
+                    System.arraycopy(hop, offset - shift, fftWindow, FFT_SIZE - shift, shift)
+                    filled = min(FFT_SIZE, filled + shift)
+
+                    // Once there is at least one hop of real PCM, analyze the full rolling window.
+                    // Its leading zeros disappear naturally during the first ~43 ms after capture starts.
+                    if (filled >= HOP_SIZE) {
                         val settings = SettingsStore.load(this)
-                        PlaybackSpectrumBus.publish(analyzer.analyze(pcm, read, sampleRate, settings))
+                        PlaybackSpectrumBus.publish(
+                            analyzer.analyze(fftWindow, FFT_SIZE, SAMPLE_RATE, settings)
+                        )
                     }
                 }
             } catch (t: Throwable) {
