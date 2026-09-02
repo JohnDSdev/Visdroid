@@ -1,6 +1,7 @@
 package com.johndsdev.visdroid
 
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.ln
@@ -30,9 +31,20 @@ class PcmSpectrumAnalyzer(private val fftSize: Int = 2048) {
             return FloatArray(max(0, settings.barCount))
         }
 
+        val usable = min(sampleCount, fftSize)
+        var peak = 0
+        for (i in 0 until usable) {
+            peak = max(peak, abs(pcm[i].toInt()))
+        }
+        // AudioPlaybackCapture normally gives true/near digital zero when playback stops.
+        // Reset smoothing here so silence means literally no bars instead of a long exponential tail.
+        if (peak <= 8) {
+            previous = null
+            return FloatArray(settings.barCount)
+        }
+
         val real = FloatArray(fftSize)
         val imag = FloatArray(fftSize)
-        val usable = min(sampleCount, fftSize)
         for (i in 0 until usable) {
             real[i] = (pcm[i] / 32768f) * window[i]
         }
