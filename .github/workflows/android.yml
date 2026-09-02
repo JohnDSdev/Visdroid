@@ -53,6 +53,7 @@ jobs:
             adb shell pm grant com.johndsdev.visdroid android.permission.RECORD_AUDIO
             adb shell am start -W -n com.johndsdev.visdroid/.CaptureLauncherActivity
             adb shell dumpsys activity activities | grep -q 'com.johndsdev.visdroid/.CaptureLauncherActivity'
+            adb shell dumpsys package com.johndsdev.visdroid | grep -q 'FullscreenVisualizerActivity'
             adb shell dumpsys package com.johndsdev.visdroid | grep -q 'VisDroidWallpaperService'
             adb shell am start -W -a android.service.wallpaper.CHANGE_LIVE_WALLPAPER --ecn android.service.wallpaper.extra.LIVE_WALLPAPER_COMPONENT com.johndsdev.visdroid/.VisDroidWallpaperService
             sleep 3
