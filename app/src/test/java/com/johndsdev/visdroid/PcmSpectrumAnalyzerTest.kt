@@ -41,4 +41,28 @@ class PcmSpectrumAnalyzerTest {
         val silent = analyzer.analyze(ShortArray(2048), 2048, sampleRate, settings)
         assertTrue(silent.all { it == 0f })
     }
+
+    @Test
+    fun adaptiveGainPreventsLoudAudioFromFlatTopping() {
+        val sampleRate = 48_000
+        val frequencies = doubleArrayOf(70.0, 120.0, 240.0, 480.0, 900.0, 1800.0, 3600.0, 7200.0)
+        val loud = ShortArray(2048) { i ->
+            var sample = 0.0
+            for ((index, frequency) in frequencies.withIndex()) {
+                sample += sin(2.0 * PI * frequency * i / sampleRate) * (9000.0 - index * 500.0)
+            }
+            sample.toInt().coerceIn(-32768, 32767).toShort()
+        }
+
+        val analyzer = PcmSpectrumAnalyzer(2048)
+        val settings = VisSettings(barCount = 36, sensitivity = 4f, decay = .82f)
+        var out = FloatArray(36)
+        repeat(24) {
+            out = analyzer.analyze(loud, loud.size, sampleRate, settings)
+        }
+
+        assertTrue(out.maxOrNull()!! < .96f)
+        assertTrue(out.count { it > .93f } <= 2)
+        assertTrue(out.distinctBy { (it * 100).toInt() }.size > 6)
+    }
 }
