@@ -21,6 +21,10 @@ class PcmSpectrumAnalyzer(private val fftSize: Int = 2048) {
     }
     private var previous: FloatArray? = null
 
+    // CAVA-style automatic sensitivity. Loud material quickly turns gain down so a wall of
+    // frequency bands does not clip at identical full height. Quieter material raises it slowly.
+    private var autoGain = 1f
+
     fun analyze(
         pcm: ShortArray,
         sampleCount: Int,
@@ -32,14 +36,15 @@ class PcmSpectrumAnalyzer(private val fftSize: Int = 2048) {
         }
 
         val usable = min(sampleCount, fftSize)
-        var peak = 0
+        var pcmPeak = 0
         for (i in 0 until usable) {
-            peak = max(peak, abs(pcm[i].toInt()))
+            pcmPeak = max(pcmPeak, abs(pcm[i].toInt()))
         }
         // AudioPlaybackCapture normally gives true/near digital zero when playback stops.
         // Reset smoothing here so silence means literally no bars instead of a long exponential tail.
-        if (peak <= 8) {
+        if (pcmPeak <= 8) {
             previous = null
+            autoGain = 1f
             return FloatArray(settings.barCount)
         }
 
@@ -55,7 +60,7 @@ class PcmSpectrumAnalyzer(private val fftSize: Int = 2048) {
         val highHz = min(16_000f, nyquist * .96f).coerceAtLeast(lowHz + 1f)
         val logLow = ln(lowHz)
         val logHigh = ln(highHz)
-        val out = FloatArray(settings.barCount)
+        val raw = FloatArray(settings.barCount)
 
         for (i in 0 until settings.barCount) {
             val f0 = exp(logLow + (logHigh - logLow) * (i.toFloat() / settings.barCount))
@@ -73,15 +78,43 @@ class PcmSpectrumAnalyzer(private val fftSize: Int = 2048) {
                 count++
             }
             val rms = if (count == 0) 0f else sqrt((energy / count).toFloat()) / (fftSize * .5f)
-            var target = (ln(1f + rms * 90f) / ln(91f)) * settings.sensitivity
-            target = ((target - .018f) / .982f).coerceIn(0f, 1f)
+            var value = ln(1f + rms * 90f) / ln(91f)
+            value = ((value - .018f) / .982f).coerceAtLeast(0f)
+            raw[i] = value
+        }
+
+        val rawPeak = raw.maxOrNull() ?: 0f
+        if (rawPeak > 0.0001f) {
+            val basePeak = rawPeak * settings.sensitivity
+            // Aim the loudest band around 88% height. This preserves headroom and prevents the
+            // characteristic flat ceiling where many loud bands all become exactly 1.0.
+            val desiredGain = (.88f / basePeak).coerceIn(.30f, 3.0f)
+            autoGain = if (desiredGain < autoGain) {
+                // React quickly to loud sections / track changes.
+                autoGain * .70f + desiredGain * .30f
+            } else {
+                // Recover gently on quiet sections so gain does not visibly pump every beat.
+                autoGain * .985f + desiredGain * .015f
+            }.coerceIn(.30f, 3.0f)
+        }
+
+        val out = FloatArray(settings.barCount)
+        for (i in raw.indices) {
+            val scaled = raw[i] * settings.sensitivity * autoGain
+            // Soft knee above 78%. Unlike hard coerceIn(), this keeps loud bands distinguishable
+            // while asymptotically approaching full height.
+            val target = if (scaled <= .78f) {
+                scaled.coerceAtLeast(0f)
+            } else {
+                (.78f + .22f * (1f - exp(-(scaled - .78f) / .22f))).coerceIn(0f, .998f)
+            }
 
             val old = previous?.getOrNull(i) ?: 0f
             out[i] = if (target >= old) {
                 old * .18f + target * .82f
             } else {
                 old * settings.decay + target * (1f - settings.decay)
-            }.coerceIn(0f, 1f)
+            }.coerceIn(0f, .998f)
         }
         previous = out
         return out
@@ -89,6 +122,7 @@ class PcmSpectrumAnalyzer(private val fftSize: Int = 2048) {
 
     fun reset() {
         previous = null
+        autoGain = 1f
     }
 
     private fun fft(real: FloatArray, imag: FloatArray) {
