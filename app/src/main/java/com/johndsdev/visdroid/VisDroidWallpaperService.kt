@@ -20,7 +20,7 @@ class VisDroidWallpaperService : WallpaperService() {
     private inner class VisEngine : Engine(), SharedPreferences.OnSharedPreferenceChangeListener {
         private val handler = Handler(Looper.getMainLooper())
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val levels = AtomicReference(FloatArray(SettingsStore.load(this@VisDroidWallpaperService).barCount))
+        private val legacyLevels = AtomicReference(FloatArray(SettingsStore.load(this@VisDroidWallpaperService).barCount))
         private var settings = SettingsStore.load(this@VisDroidWallpaperService)
         private var background: Bitmap? = null
         private var visible = false
@@ -80,8 +80,8 @@ class VisDroidWallpaperService : WallpaperService() {
 
         private fun reloadSettings() {
             settings = SettingsStore.load(this@VisDroidWallpaperService)
-            val current = levels.get()
-            if (current.size != settings.barCount) levels.set(FloatArray(settings.barCount))
+            val current = legacyLevels.get()
+            if (current.size != settings.barCount) legacyLevels.set(FloatArray(settings.barCount))
         }
 
         private fun reloadBackground() {
@@ -90,17 +90,36 @@ class VisDroidWallpaperService : WallpaperService() {
         }
 
         private fun startAnalyzer() {
-            if (analyzer != null) return
+            if (analyzer != null || PlaybackSpectrumBus.active.get()) return
             analyzer = AudioAnalyzer(
                 context = this@VisDroidWallpaperService,
                 settingsProvider = { settings },
-                onLevels = { levels.set(it) }
-            ).also { it.start() }
+                onLevels = { legacyLevels.set(it) }
+            ).also { candidate ->
+                if (!candidate.start()) analyzer = null
+            }
         }
 
         private fun stopAnalyzer() {
             analyzer?.stop()
             analyzer = null
+        }
+
+        private fun currentLevels(): FloatArray {
+            if (PlaybackSpectrumBus.active.get()) {
+                val captured = PlaybackSpectrumBus.levels.get()
+                if (captured.isNotEmpty()) {
+                    if (captured.size == settings.barCount) return captured
+                    val resized = FloatArray(settings.barCount)
+                    for (i in resized.indices) {
+                        val sourceIndex = ((i.toFloat() / resized.size) * captured.size)
+                            .toInt().coerceIn(0, captured.lastIndex)
+                        resized[i] = captured[sourceIndex]
+                    }
+                    return resized
+                }
+            }
+            return legacyLevels.get()
         }
 
         private fun drawFrame() {
@@ -109,7 +128,7 @@ class VisDroidWallpaperService : WallpaperService() {
             try {
                 canvas = holder.lockCanvas() ?: return
                 drawBackground(canvas)
-                BarRenderer.draw(canvas, levels.get(), settings, resources.displayMetrics.density, paint)
+                BarRenderer.draw(canvas, currentLevels(), settings, resources.displayMetrics.density, paint)
             } catch (_: Throwable) {
                 // A live wallpaper surface can disappear between callbacks. The next frame will recover.
             } finally {
