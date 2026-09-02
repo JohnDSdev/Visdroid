@@ -8,9 +8,8 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
-import android.os.Handler
-import android.os.Looper
 import android.service.wallpaper.WallpaperService
+import android.view.Choreographer
 import android.view.SurfaceHolder
 import java.util.concurrent.atomic.AtomicReference
 
@@ -18,19 +17,27 @@ class VisDroidWallpaperService : WallpaperService() {
     override fun onCreateEngine(): Engine = VisEngine()
 
     private inner class VisEngine : Engine(), SharedPreferences.OnSharedPreferenceChangeListener {
-        private val handler = Handler(Looper.getMainLooper())
+        private val choreographer = Choreographer.getInstance()
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         private val legacyLevels = AtomicReference(FloatArray(SettingsStore.load(this@VisDroidWallpaperService).barCount))
         private var settings = SettingsStore.load(this@VisDroidWallpaperService)
         private var background: Bitmap? = null
         private var visible = false
         private var analyzer: AudioAnalyzer? = null
+        private var lastDrawNanos = 0L
         private val prefs = getSharedPreferences("visdroid_settings", MODE_PRIVATE)
 
-        private val drawRunnable = object : Runnable {
-            override fun run() {
-                drawFrame()
-                if (visible) handler.postDelayed(this, 16L)
+        private val frameCallback = object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (!visible) return
+
+                // Choreographer follows the physical display refresh rate. Cap at ~60 fps so a
+                // 120 Hz phone does not waste battery drawing the wallpaper twice as often as needed.
+                if (lastDrawNanos == 0L || frameTimeNanos - lastDrawNanos >= 15_000_000L) {
+                    drawFrame()
+                    lastDrawNanos = frameTimeNanos
+                }
+                choreographer.postFrameCallback(this)
             }
         }
 
@@ -43,7 +50,7 @@ class VisDroidWallpaperService : WallpaperService() {
         override fun onDestroy() {
             prefs.unregisterOnSharedPreferenceChangeListener(this)
             stopAnalyzer()
-            handler.removeCallbacks(drawRunnable)
+            choreographer.removeFrameCallback(frameCallback)
             background?.recycle()
             background = null
             super.onDestroy()
@@ -55,10 +62,12 @@ class VisDroidWallpaperService : WallpaperService() {
                 reloadSettings()
                 reloadBackground()
                 startAnalyzer()
-                handler.removeCallbacks(drawRunnable)
-                handler.post(drawRunnable)
+                lastDrawNanos = 0L
+                choreographer.removeFrameCallback(frameCallback)
+                choreographer.postFrameCallback(frameCallback)
             } else {
-                handler.removeCallbacks(drawRunnable)
+                choreographer.removeFrameCallback(frameCallback)
+                lastDrawNanos = 0L
                 stopAnalyzer()
             }
         }
@@ -69,7 +78,8 @@ class VisDroidWallpaperService : WallpaperService() {
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder) {
-            handler.removeCallbacks(drawRunnable)
+            choreographer.removeFrameCallback(frameCallback)
+            lastDrawNanos = 0L
             stopAnalyzer()
             super.onSurfaceDestroyed(holder)
         }
@@ -126,7 +136,10 @@ class VisDroidWallpaperService : WallpaperService() {
             val holder = surfaceHolder
             var canvas: Canvas? = null
             try {
-                canvas = holder.lockCanvas() ?: return
+                // Hardware canvas keeps the 60 fps path considerably cheaper on modern phones.
+                canvas = runCatching { holder.lockHardwareCanvas() }.getOrNull()
+                    ?: holder.lockCanvas()
+                    ?: return
                 drawBackground(canvas)
                 BarRenderer.draw(canvas, currentLevels(), settings, resources.displayMetrics.density, paint)
             } catch (_: Throwable) {
