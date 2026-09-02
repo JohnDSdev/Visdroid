@@ -18,7 +18,6 @@ object BarRenderer {
         val gap = settings.gapDp * density
         val thickness = min(desiredThickness, (slot - gap).coerceAtLeast(1f))
         val maxLength = outwardSpan * settings.maxLengthFraction
-        val silentBaseline = (4f * density / maxLength).coerceIn(0.008f, 0.03f)
 
         paint.color = settings.color
         paint.alpha = (255f * settings.opacity).toInt().coerceIn(0, 255)
@@ -27,7 +26,9 @@ object BarRenderer {
 
         for (i in levels.indices) {
             val level = levels[i].coerceIn(0f, 1f)
-            val length = maxLength * maxOf(level, silentBaseline)
+            val length = maxLength * level
+            if (length <= .5f) continue
+
             val center = when (settings.side) {
                 BarSide.RIGHT, BarSide.LEFT -> h - slot * (i + .5f)
                 BarSide.BOTTOM, BarSide.TOP -> slot * (i + .5f)
